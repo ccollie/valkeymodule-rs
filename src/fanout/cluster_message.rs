@@ -2,11 +2,11 @@ use super::encoding::{
     try_read_signed_varint, try_read_uvarint, write_signed_varint, write_uvarint,
 };
 use crate::{ValkeyError, ValkeyResult};
+use super::fanout_error::INVALID_MESSAGE_ERROR;
 
 pub const CLUSTER_MESSAGE_VERSION: u16 = 1;
 pub const CLUSTER_MESSAGE_MARKER: u32 = 0xBADCAB;
 
-const INVALID_CLUSTER_MESSAGE: &str = "Invalid cluster message";
 
 /// Header for messages exchanged between cluster nodes.
 pub(super) struct ClusterMessageHeader {
@@ -47,7 +47,7 @@ impl ClusterMessageHeader {
         let request_id = read_uvarint(&mut buf)?;
 
         let db = try_read_signed_varint(&mut buf)
-            .map_err(|_| ValkeyError::Str(INVALID_CLUSTER_MESSAGE))? as i32;
+            .map_err(|_| ValkeyError::Str(INVALID_MESSAGE_ERROR))? as i32;
 
         // Read msg_type and reserved as direct bytes
         let reserved = read_uvarint(&mut buf)?;
@@ -65,7 +65,7 @@ impl ClusterMessageHeader {
 }
 
 fn read_uvarint(input: &mut &[u8]) -> ValkeyResult<u64> {
-    try_read_uvarint(input).map_err(|_| ValkeyError::Str(INVALID_CLUSTER_MESSAGE))
+    try_read_uvarint(input).map_err(|_| ValkeyError::Str(INVALID_MESSAGE_ERROR))
 }
 
 fn write_marker(slice: &mut Vec<u8>) {
@@ -76,7 +76,7 @@ fn write_marker(slice: &mut Vec<u8>) {
 fn skip_marker(input: &[u8]) -> ValkeyResult<&[u8]> {
     let size = size_of_val(&CLUSTER_MESSAGE_MARKER);
     if input.len() < size {
-        return Err(ValkeyError::Str(INVALID_CLUSTER_MESSAGE));
+        return Err(ValkeyError::Str(INVALID_MESSAGE_ERROR));
     }
     let (int_bytes, rest) = input.split_at(size);
     let marker = u32::from_le_bytes(
@@ -85,7 +85,7 @@ fn skip_marker(input: &[u8]) -> ValkeyResult<&[u8]> {
             .expect("slice with incorrect length reading cluster message marker"),
     );
     if marker != CLUSTER_MESSAGE_MARKER {
-        return Err(ValkeyError::Str(INVALID_CLUSTER_MESSAGE));
+        return Err(ValkeyError::Str(INVALID_MESSAGE_ERROR));
     }
 
     Ok(rest)
