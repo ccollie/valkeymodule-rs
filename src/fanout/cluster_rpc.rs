@@ -30,12 +30,20 @@ struct InFlightRequest {
 }
 
 impl InFlightRequest {
-    fn rpc_done(&mut self) {
+    fn rpc_done(&mut self, ctx: &Context) {
         self.outstanding = self.outstanding.saturating_sub(1);
         if self.outstanding == 0 {
             // Last response received, clean up
+            self.cancel_timer(ctx);
             let mut map = get_inflight_requests_map();
             map.remove(&self.timer_id);
+        }
+    }
+
+    fn cancel_timer(&mut self, ctx: &Context) {
+        if self.timer_id > 0 {
+            let _ = ctx.stop_timer::<u64>(self.timer_id);
+            self.timer_id = 0;
         }
     }
 }
@@ -330,8 +338,9 @@ extern "C" fn on_response_received(
         ));
         return;
     };
+
     let handler = request.response_handler.clone();
-    request.rpc_done();
+    request.rpc_done(&ctx);
     drop(map); // drop the lock before calling the handler
 
     let target = FanoutTarget::from_node_id(sender_id).expect("Invalid target ID");
@@ -362,8 +371,9 @@ extern "C" fn on_error_received(
         ));
         return;
     };
+
     let handler = request.response_handler.clone();
-    request.rpc_done();
+    request.rpc_done(&ctx);
     drop(map); // drop the lock before calling the handler
 
     let target = FanoutTarget::from_node_id(sender_id).expect("Invalid target ID");
