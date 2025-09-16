@@ -22,7 +22,7 @@ pub static FORCE_REPLICAS_READONLY: AtomicBool = AtomicBool::new(false);
 pub(super) const MASTER_ID_LEN: usize = (VALKEYMODULE_NODE_ID_LEN + 1) as usize;
 
 /// Maximum length of an IPv6 address string
-pub(super) const INET6_ADDR_STR_LEN: usize = 46;
+pub const INET6_ADDR_STR_LEN: usize = 46;
 
 pub type ClusterNodeIdBuf = [u8; (VALKEYMODULE_NODE_ID_LEN as usize) + 1]; // +1 for null terminator
 pub(super) type ClusterNodeMap = HashMap<String, Vec<ClusterNodeInfo>>;
@@ -86,7 +86,7 @@ impl FanoutTarget {
     }
 }
 
-pub(super) fn copy_node_id(node_id: *const c_char) -> Option<ClusterNodeIdBuf> {
+fn copy_node_id(node_id: *const c_char) -> Option<ClusterNodeIdBuf> {
     if node_id.is_null() {
         return None;
     }
