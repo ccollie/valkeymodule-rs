@@ -1,22 +1,20 @@
 use super::cluster_message::{serialize_request_message, RequestMessage};
 use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
-use super::fanout_targets::{FanoutTarget};
+use super::fanout_targets::FanoutTarget;
+use super::utils::generate_id;
 use super::{is_clustered, is_multi_or_lua};
-use core::time::Duration;
-use std::collections::HashMap;
-use std::os::raw::{c_char, c_uchar, c_int};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, LazyLock, Mutex};
 use crate::{Context, DetachedContext, Status, ValkeyModuleCtx, VALKEYMODULE_OK};
 use crate::{RedisModuleCtx, ValkeyError, ValkeyResult};
-
-use super::utils::generate_id;
+use core::time::Duration;
+use std::collections::HashMap;
+use std::os::raw::{c_char, c_int, c_uchar};
+use std::sync::{Arc, LazyLock, Mutex};
 
 pub(super) const CLUSTER_REQUEST_MESSAGE: u8 = 0x01;
 pub(super) const CLUSTER_RESPONSE_MESSAGE: u8 = 0x02;
 pub(super) const CLUSTER_ERROR_MESSAGE: u8 = 0x03;
 
-// todo: make these configurable?
+
 pub static DEFAULT_CLUSTER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) type ResponseCallback = Arc<dyn Fn(Result<&[u8], FanoutError>, FanoutTarget) + Send + Sync>;
@@ -24,34 +22,19 @@ pub(super) type RequestHandlerCallback =
     Arc<dyn Fn(&Context, &[u8], &mut Vec<u8>, FanoutTarget) -> ValkeyResult<()> + Send + Sync>;
 
 struct InFlightRequest {
-    db: i32,
     request_handler: RequestHandlerCallback,
     response_handler: ResponseCallback,
-    outstanding: AtomicU64,
+    outstanding: u64,
     timer_id: u64,
-    timed_out: AtomicBool,
+    timed_out: bool,
 }
 
 impl InFlightRequest {
-    fn is_timed_out(&self) -> bool {
-        self.timed_out.load(Ordering::Relaxed)
-    }
-
-    fn time_out(&self) {
-        self.timed_out.store(true, Ordering::Relaxed);
-    }
-
-    fn raise_error(&self, error: FanoutError, target: FanoutTarget) {
-        if !self.is_timed_out() {
-            (self.response_handler)(Err(error), target);
-        }
-    }
-
-    fn rpc_done(&self) {
-        let remaining = self.outstanding.fetch_sub(1, Ordering::AcqRel);
-        if remaining == 1 {
+    fn rpc_done(&mut self) {
+        self.outstanding = self.outstanding.saturating_sub(1);
+        if self.outstanding == 0 {
             // Last response received, clean up
-            let mut map = INFLIGHT_REQUESTS.lock().unwrap();
+            let mut map = get_inflight_requests_map();
             map.remove(&self.timer_id);
         }
     }
@@ -65,11 +48,23 @@ fn get_inflight_requests_map() -> std::sync::MutexGuard<'static, InFlightRequest
     INFLIGHT_REQUESTS.lock().expect("InFlightRequests lock poisoned")
 }
 
-fn on_command_timeout(ctx: &Context, id: u64) {
-    let map = get_inflight_requests_map();
-    if let Some(request) = map.get(&id) {
-        let _ = ctx.stop_timer::<u64>(request.timer_id);
-        request.time_out();
+fn on_request_timeout(ctx: &Context, id: u64) {
+    let mut map = get_inflight_requests_map();
+    // We only mark the request as timed out the first time through. The actual removal from the map
+    // happens when the last response arrives or when we hit the timeout again.
+    if let Some(request) = map.get_mut(&id) {
+        if request.timed_out {
+            let _ = ctx.stop_timer::<u64>(request.timer_id);
+            // Already timed out, remove from the map
+            map.remove(&id);
+            return;
+        }
+        request.timed_out = true;
+        let handler = request.response_handler.clone();
+        drop(map); // drop the lock before calling the handler
+
+        handler(Err(FanoutError::timeout()), FanoutTarget::Local);
+        // Reset the timer to give some extra time for late responses
     }
 }
 
@@ -124,15 +119,14 @@ pub(super) fn send_cluster_request(
     }
 
     let timeout = timeout.unwrap_or_else(get_cluster_command_timeout);
-    let timer_id = ctx.create_timer(timeout, on_command_timeout, id);
+    let timer_id = ctx.create_timer(timeout, on_request_timeout, id);
 
     let request = InFlightRequest {
-        db,
         request_handler,
         response_handler,
         timer_id,
-        outstanding: AtomicU64::new(node_count as u64),
-        timed_out: AtomicBool::new(false),
+        outstanding: node_count as u64,
+        timed_out: false,
     };
 
     let mut map = get_inflight_requests_map();
@@ -190,7 +184,7 @@ fn parse_cluster_message(
                 let msg = format!("BUG: empty response payload for request ({request_id})");
                 ctx.log_warning(&msg);
                 if let Some(sender_id) = sender_id {
-                    let error = FanoutError::failed(msg.clone());
+                    let error = FanoutError::invalid_message();
                     let _ = send_error_response(ctx, 0, sender_id, error);
                 }
                 return None;
@@ -201,8 +195,7 @@ fn parse_cluster_message(
             let msg = format!("Failed to parse cluster message: {e}");
             ctx.log_warning(&msg);
             if let Some(sender_id) = sender_id {
-                let error = FanoutError::failed(msg.clone());
-                let _ = send_error_response(ctx, 0, sender_id, error);
+                let _ = send_error_response(ctx, 0, sender_id, e.into());
             }
             None
         }
@@ -233,15 +226,15 @@ fn process_request<'a>(ctx: &'a Context, message: RequestMessage<'a>, sender_id:
 
     let target = FanoutTarget::from_node_id(sender_id).expect("Invalid target ID");
     let res = handler(ctx, buf, &mut dest, target);
+
+    set_current_db(ctx, save_db);
     if let Err(e) = res {
-        set_current_db(ctx, save_db);
         let msg = e.to_string();
         send_error_response(ctx, request_id, sender_id, e.into());
         ctx.log_warning(&msg);
         return;
     };
 
-    set_current_db(ctx, save_db);
     if send_response_message(ctx, request_id, sender_id, &dest) == Status::Err {
         let msg = format!("Failed to send response message to node {sender_id:?}");
         ctx.log_warning(&msg);
@@ -330,8 +323,8 @@ extern "C" fn on_response_received(
     let request_id = message.request_id;
 
     // fetch corresponding inflight request by request_id
-    let map = get_inflight_requests_map();
-    let Some(request) = map.get(&request_id) else {
+    let mut map = get_inflight_requests_map();
+    let Some(request) = map.get_mut(&request_id) else {
         ctx.log_warning(&format!(
             "Failed to find inflight request for id {request_id}. Possible timeout.",
         ));
@@ -342,8 +335,7 @@ extern "C" fn on_response_received(
     drop(map); // drop the lock before calling the handler
 
     let target = FanoutTarget::from_node_id(sender_id).expect("Invalid target ID");
-    
-    set_current_db(&ctx, message.db);
+
     handler(Ok(message.buf), target);
 }
 
@@ -363,8 +355,8 @@ extern "C" fn on_error_received(
     let request_id = message.request_id;
 
     // fetch corresponding inflight request by request_id
-    let map = get_inflight_requests_map();
-    let Some(request) = map.get(&request_id) else {
+    let mut map = get_inflight_requests_map();
+    let Some(request) = map.get_mut(&request_id) else {
         ctx.log_warning(&format!(
             "Failed to find inflight request for id {request_id}. Possible timeout.",
         ));
@@ -379,7 +371,7 @@ extern "C" fn on_error_received(
         Ok((error, _)) => handler(Err(error), target),
         Err(_) => {
             ctx.log_warning("Failed to deserialize error response");
-            let err = FanoutError::serialization("");
+            let err = FanoutError::invalid_message();
             handler(Err(err), target);
         },
     }
