@@ -29,12 +29,6 @@ impl fmt::Display for DecodeError {
 }
 
 impl DecodeError {
-    /// Creates a new `DecodeError::Overflow` indicating that the decoded value would overflow the target type.
-    #[inline]
-    pub const fn overflow() -> Self {
-        Self::Overflow
-    }
-
     /// Creates a new `DecodeError::InsufficientData` indicating that the buffer does not have enough data
     /// to decode a value.
     #[inline]
@@ -47,22 +41,6 @@ impl DecodeError {
 }
 
 pub type DecodeResult<T> = Result<T, DecodeError>;
-
-pub(super) fn write_u64_le(buf: &mut Vec<u8>, value: u64) {
-    buf.extend_from_slice(&value.to_le_bytes());
-}
-
-pub(super) fn try_read_u64_le(buf: &mut &[u8]) -> DecodeResult<u64> {
-    const U64_BYTE_SIZE: usize = size_of::<u64>();
-
-    if buf.len() < U64_BYTE_SIZE {
-        return Err(DecodeError::insufficient_data(buf.len(), U64_BYTE_SIZE));
-    }
-    let mut array = [0u8; U64_BYTE_SIZE];
-    array.copy_from_slice(&buf[..U64_BYTE_SIZE]);
-    *buf = &buf[U64_BYTE_SIZE..];
-    Ok(u64::from_le_bytes(array))
-}
 
 /// Writes an unsigned varint to the buffer
 pub(super) fn write_uvarint(buf: &mut Vec<u8>, mut value: u64) {
@@ -135,16 +113,6 @@ pub(super) fn try_read_byte_slice<'a>(buf: &mut &'a [u8]) -> DecodeResult<&'a [u
     let slice = &buf[..len];
     *buf = &buf[len..];
     Ok(slice)
-}
-
-pub(super) fn write_f64_le(buf: &mut Vec<u8>, value: f64) {
-    let bits = value.to_bits();
-    write_u64_le(buf, bits)
-}
-
-#[inline]
-pub(super) fn try_read_f64_le(buf: &mut &[u8]) -> DecodeResult<f64> {
-    try_read_u64_le(buf).map(f64::from_bits)
 }
 
 // see: http://stackoverflow.com/a/2211086/56332
