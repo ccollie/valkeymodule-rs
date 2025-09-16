@@ -13,8 +13,6 @@ pub enum DecodeError {
         /// The number of bytes available in the buffer.
         available: usize,
     },
-    /// A custom error message.
-    Other(std::borrow::Cow<'static, str>),
 }
 
 impl fmt::Display for DecodeError {
@@ -26,7 +24,6 @@ impl fmt::Display for DecodeError {
                 "not enough bytes to decode value: only {} were available, but {} requested",
                 available, requested
             ),
-            DecodeError::Other(msg) => write!(f, "{msg}"),
         }
     }
 }
@@ -46,12 +43,6 @@ impl DecodeError {
             available,
             requested,
         }
-    }
-
-    /// Creates a new `DecodeError::Other` with the given message.
-    #[inline]
-    pub fn other(msg: impl Into<std::borrow::Cow<'static, str>>) -> Self {
-        Self::Other(msg.into())
     }
 }
 

@@ -5,7 +5,6 @@ use crate::{
 };
 use std::hash::{BuildHasher, RandomState};
 use std::net::Ipv6Addr;
-use std::os::raw::c_char;
 use std::sync::LazyLock;
 
 const VALKEYMODULE_CLIENT_INFO_FLAG_READONLY: u64 = 1 << 6; /* Valkey 9 */
