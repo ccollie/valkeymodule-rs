@@ -14,8 +14,8 @@ pub struct FanoutError {
 #[non_exhaustive]
 #[repr(u8)]
 pub enum ErrorKind {
-    /// Something went wrong
-    Failed = 0,
+    /// Invalid cluster message
+    InvalidMessage = 0,
 
     /// A cluster node was unreachable.
     NodeUnreachable = 1,
@@ -39,21 +39,21 @@ pub enum ErrorKind {
     Internal = 8,
 }
 
-pub const FAILED_ERROR: &str = "Failed";
-pub const PERMISSIONS_ERROR: &str = "Permission denied";
-pub const KEY_PERMISSIONS_ERROR: &str = "User does not have access to one or more keys";
-pub const UNKNOWN_MESSAGE_TYPE_ERROR: &str = "Unknown message type.";
-pub const SERIALIZATION_ERROR: &str = "Serialization error";
-pub const BAD_REQUEST_ID_ERROR: &str = "Bad request id";
-pub const TIMEOUT_ERROR: &str = "Fanout command timed out";
-pub const NODE_UNREACHABLE_ERROR: &str = "Cluster node unreachable";
-pub const NO_CLUSTER_NODES_AVAILABLE: &str = "No cluster nodes available";
-pub const INTERNAL_ERROR: &str = "Internal error";
+pub(super) const PERMISSIONS_ERROR: &str = "Permission denied";
+pub(super) const KEY_PERMISSIONS_ERROR: &str = "User does not have access to one or more keys";
+pub(super) const UNKNOWN_MESSAGE_TYPE_ERROR: &str = "Unknown message type.";
+pub(super) const SERIALIZATION_ERROR: &str = "Serialization error";
+pub(super) const BAD_REQUEST_ID_ERROR: &str = "Bad request id";
+pub(super) const TIMEOUT_ERROR: &str = "Fanout command timed out";
+pub(super) const NODE_UNREACHABLE_ERROR: &str = "Cluster node unreachable";
+pub(super) const NO_CLUSTER_NODES_AVAILABLE: &str = "No cluster nodes available";
+pub(super) const INTERNAL_ERROR: &str = "Internal error";
+pub(super) const INVALID_MESSAGE_ERROR: &str = "Invalid cluster message";
 
 impl ErrorKind {
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Failed => FAILED_ERROR,
+            Self::InvalidMessage => INVALID_MESSAGE_ERROR,
             Self::Permissions => PERMISSIONS_ERROR,
             Self::KeyPermissions => KEY_PERMISSIONS_ERROR,
             Self::UnknownMessageType => UNKNOWN_MESSAGE_TYPE_ERROR,
@@ -69,13 +69,10 @@ impl ErrorKind {
 pub type FanoutResult<T> = Result<T, FanoutError>;
 
 impl FanoutError {
-    pub fn failed<S: Into<String>>(description: S) -> Self {
-        Self {
-            message: description.into(),
-            kind: ErrorKind::Failed,
-        }
+    pub fn timeout() -> FanoutError {
+        ErrorKind::Timeout.into()
     }
-
+    
     pub fn serialization<S: Into<String>>(description: S) -> Self {
         Self {
             message: description.into(),
@@ -90,6 +87,10 @@ impl FanoutError {
         }
     }
 
+    pub fn invalid_message() -> Self {
+        ErrorKind::InvalidMessage.into()
+    }
+    
     pub fn serialize(&self, buf: &mut Vec<u8>) {
         buf.push(self.kind as u8);
         write_byte_slice(buf, self.message.as_str().as_ref());
@@ -128,7 +129,7 @@ impl TryFrom<u8> for ErrorKind {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0 => Ok(ErrorKind::Failed),
+            0 => Ok(ErrorKind::InvalidMessage),
             1 => Ok(ErrorKind::NodeUnreachable),
             2 => Ok(ErrorKind::Timeout),
             3 => Ok(ErrorKind::UnknownMessageType),
@@ -141,6 +142,15 @@ impl TryFrom<u8> for ErrorKind {
                 let msg = format!("Invalid error kind: {value}");
                 Err(ValkeyError::String(msg))
             }
+        }
+    }
+}
+
+impl From<ErrorKind> for FanoutError {
+    fn from(kind: ErrorKind) -> Self {
+        Self {
+            kind,
+            message: String::new(),
         }
     }
 }
@@ -178,45 +188,25 @@ impl core::error::Error for FanoutError {
 /// or falls back to a general Failed error with the original message.
 fn convert_from_string(err: &str) -> FanoutError {
     if err.is_empty() {
-        return FanoutError {
-            kind: ErrorKind::Failed,
-            message: String::new(),
-        };
+        return ErrorKind::Internal.into()
     }
-
-
+    
     match err {
-        KEY_PERMISSIONS_ERROR => FanoutError {
-            kind: ErrorKind::KeyPermissions,
-            message: String::new(),
-        },
-        PERMISSIONS_ERROR => FanoutError {
-            kind: ErrorKind::Permissions,
-            message: String::new(),
-        },
-        FAILED_ERROR => FanoutError::failed(String::new()),
-        INTERNAL_ERROR => FanoutError {
-            kind: ErrorKind::Internal,
-            message: String::new(),
-        },
-        NODE_UNREACHABLE_ERROR => FanoutError {
-            kind: ErrorKind::NodeUnreachable,
-            message: String::new(),
-        },
-        UNKNOWN_MESSAGE_TYPE_ERROR => FanoutError {
-            kind: ErrorKind::UnknownMessageType,
-            message: String::new(),
-        },
+        INVALID_MESSAGE_ERROR => ErrorKind::InvalidMessage.into(),
+        KEY_PERMISSIONS_ERROR => ErrorKind::KeyPermissions.into(),
+        PERMISSIONS_ERROR => ErrorKind::Permissions.into(),
+        INTERNAL_ERROR => ErrorKind::Internal.into(),
+        NODE_UNREACHABLE_ERROR => ErrorKind::NodeUnreachable.into(),
+        UNKNOWN_MESSAGE_TYPE_ERROR => ErrorKind::UnknownMessageType.into(),
         SERIALIZATION_ERROR => FanoutError::serialization(String::new()),
-        BAD_REQUEST_ID_ERROR => FanoutError {
-            kind: ErrorKind::BadRequestId,
-            message: String::new(),
+        BAD_REQUEST_ID_ERROR => ErrorKind::BadRequestId.into(),
+        TIMEOUT_ERROR =>ErrorKind::Timeout.into(),
+        _ => {
+            FanoutError {
+                kind: ErrorKind::Internal,
+                message: err.to_string(),
+            }
         },
-        TIMEOUT_ERROR => FanoutError {
-            kind: ErrorKind::Timeout,
-            message: String::new(),
-        },
-        _ => FanoutError::failed(err.to_string()),
     }
 }
 
@@ -237,7 +227,10 @@ impl From<ValkeyError> for FanoutError {
         match value {
             ValkeyError::Str(msg) => convert_from_string(msg),
             ValkeyError::String(err) => convert_from_string(&err),
-            _ => FanoutError::failed(value.to_string()),
+            _ => FanoutError {
+                kind: ErrorKind::Internal,
+                message: value.to_string(),
+            },
         }
     }
 }
@@ -318,7 +311,7 @@ mod tests {
     #[test]
     fn test_serialize_deserialize_all_error_kinds() {
         let error_kinds = [
-            ErrorKind::Failed,
+            ErrorKind::InvalidMessage,
             ErrorKind::NodeUnreachable,
             ErrorKind::Timeout,
             ErrorKind::UnknownMessageType,
@@ -481,7 +474,7 @@ mod tests {
     #[test]
     fn test_error_kind_repr_u8() {
         // Test that the repr(u8) values match what we expect
-        assert_eq!(ErrorKind::Failed as u8, 0);
+        assert_eq!(ErrorKind::InvalidMessage as u8, 0);
         assert_eq!(ErrorKind::NodeUnreachable as u8, 1);
         assert_eq!(ErrorKind::Timeout as u8, 2);
         assert_eq!(ErrorKind::UnknownMessageType as u8, 3);
