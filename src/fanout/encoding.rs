@@ -57,11 +57,11 @@ impl DecodeError {
 
 pub type DecodeResult<T> = Result<T, DecodeError>;
 
-pub(crate) fn write_u64_le(buf: &mut Vec<u8>, value: u64) {
+pub(super) fn write_u64_le(buf: &mut Vec<u8>, value: u64) {
     buf.extend_from_slice(&value.to_le_bytes());
 }
 
-pub(crate) fn try_read_u64_le(buf: &mut &[u8]) -> DecodeResult<u64> {
+pub(super) fn try_read_u64_le(buf: &mut &[u8]) -> DecodeResult<u64> {
     const U64_BYTE_SIZE: usize = size_of::<u64>();
 
     if buf.len() < U64_BYTE_SIZE {
@@ -74,7 +74,7 @@ pub(crate) fn try_read_u64_le(buf: &mut &[u8]) -> DecodeResult<u64> {
 }
 
 /// Writes an unsigned varint to the buffer
-pub(crate) fn write_uvarint(buf: &mut Vec<u8>, mut value: u64) {
+pub(super) fn write_uvarint(buf: &mut Vec<u8>, mut value: u64) {
     while value >= 0x80 {
         buf.push((value as u8) | 0x80);
         value >>= 7;
@@ -83,13 +83,13 @@ pub(crate) fn write_uvarint(buf: &mut Vec<u8>, mut value: u64) {
 }
 
 /// Writes a signed varint using zigzag encoding
-pub(crate) fn write_signed_varint(buf: &mut Vec<u8>, value: i64) {
+pub(super) fn write_signed_varint(buf: &mut Vec<u8>, value: i64) {
     // Use zigzag encoding for signed values
     let unsigned = zigzag_encode(value);
     write_uvarint(buf, unsigned);
 }
 
-pub(crate) fn write_byte_slice(buf: &mut Vec<u8>, slice: &[u8]) {
+pub(super) fn write_byte_slice(buf: &mut Vec<u8>, slice: &[u8]) {
     buf.reserve(slice.len() + 3);
     write_uvarint(buf, slice.len() as u64);
     if slice.is_empty() {
@@ -100,7 +100,7 @@ pub(crate) fn write_byte_slice(buf: &mut Vec<u8>, slice: &[u8]) {
 
 /// Reads an unsigned varint from the buffer
 /// Returns the value and the number of bytes consumed, or None if invalid
-pub(crate) fn try_read_uvarint(buf: &mut &[u8]) -> DecodeResult<u64> {
+pub(super) fn try_read_uvarint(buf: &mut &[u8]) -> DecodeResult<u64> {
     let mut value: u64 = 0;
     let mut shift = 0;
     let mut current_offset = 0;
@@ -130,11 +130,11 @@ pub(crate) fn try_read_uvarint(buf: &mut &[u8]) -> DecodeResult<u64> {
 }
 
 /// Reads a signed varint from the buffer using zigzag encoding
-pub(crate) fn try_read_signed_varint(buf: &mut &[u8]) -> DecodeResult<i64> {
+pub(super) fn try_read_signed_varint(buf: &mut &[u8]) -> DecodeResult<i64> {
     try_read_uvarint(buf).map(zigzag_decode)
 }
 
-pub(crate) fn try_read_byte_slice<'a>(buf: &mut &'a [u8]) -> DecodeResult<&'a [u8]> {
+pub(super) fn try_read_byte_slice<'a>(buf: &mut &'a [u8]) -> DecodeResult<&'a [u8]> {
     let len = try_read_uvarint(buf)? as usize;
 
     if len > buf.len() {
@@ -146,13 +146,13 @@ pub(crate) fn try_read_byte_slice<'a>(buf: &mut &'a [u8]) -> DecodeResult<&'a [u
     Ok(slice)
 }
 
-pub(crate) fn write_f64_le(buf: &mut Vec<u8>, value: f64) {
+pub(super) fn write_f64_le(buf: &mut Vec<u8>, value: f64) {
     let bits = value.to_bits();
     write_u64_le(buf, bits)
 }
 
 #[inline]
-pub(crate) fn try_read_f64_le(buf: &mut &[u8]) -> DecodeResult<f64> {
+pub(super) fn try_read_f64_le(buf: &mut &[u8]) -> DecodeResult<f64> {
     try_read_u64_le(buf).map(f64::from_bits)
 }
 
@@ -160,11 +160,11 @@ pub(crate) fn try_read_f64_le(buf: &mut &[u8]) -> DecodeResult<f64> {
 // casting required because operations like unary negation
 // cannot be performed on unsigned integers
 #[inline]
-pub(crate) fn zigzag_decode(from: u64) -> i64 {
+fn zigzag_decode(from: u64) -> i64 {
     ((from >> 1) ^ (-((from & 1) as i64)) as u64) as i64
 }
 
 #[inline]
-pub(crate) fn zigzag_encode(from: i64) -> u64 {
+fn zigzag_encode(from: i64) -> u64 {
     ((from << 1) ^ (from >> 63)) as u64
 }

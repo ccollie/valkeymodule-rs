@@ -19,8 +19,8 @@ pub(super) const CLUSTER_ERROR_MESSAGE: u8 = 0x03;
 // todo: make these configurable?
 pub static DEFAULT_CLUSTER_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
-pub(crate) type ResponseCallback = Arc<dyn Fn(Result<&[u8], FanoutError>, FanoutTarget) + Send + Sync>;
-pub(crate) type RequestHandlerCallback =
+pub(super) type ResponseCallback = Arc<dyn Fn(Result<&[u8], FanoutError>, FanoutTarget) + Send + Sync>;
+pub(super) type RequestHandlerCallback =
     Arc<dyn Fn(&Context, &[u8], &mut Vec<u8>, FanoutTarget) -> ValkeyResult<()> + Send + Sync>;
 
 struct InFlightRequest {
@@ -190,7 +190,7 @@ fn parse_cluster_message(
                 let msg = format!("BUG: empty response payload for request ({request_id})");
                 ctx.log_warning(&msg);
                 if let Some(sender_id) = sender_id {
-                    let error = FanoutError::failed(msg.clone()); // todo: better error
+                    let error = FanoutError::failed(msg.clone());
                     let _ = send_error_response(ctx, 0, sender_id, error);
                 }
                 return None;
@@ -201,7 +201,7 @@ fn parse_cluster_message(
             let msg = format!("Failed to parse cluster message: {e}");
             ctx.log_warning(&msg);
             if let Some(sender_id) = sender_id {
-                let error = FanoutError::failed(msg.clone()); // todo: better error
+                let error = FanoutError::failed(msg.clone());
                 let _ = send_error_response(ctx, 0, sender_id, error);
             }
             None
@@ -332,9 +332,8 @@ extern "C" fn on_response_received(
     // fetch corresponding inflight request by request_id
     let map = get_inflight_requests_map();
     let Some(request) = map.get(&request_id) else {
-        // possible timeout. todo: pass timeout error?
         ctx.log_warning(&format!(
-            "Failed to find inflight request for id {request_id}"
+            "Failed to find inflight request for id {request_id}. Possible timeout.",
         ));
         return;
     };
@@ -366,9 +365,8 @@ extern "C" fn on_error_received(
     // fetch corresponding inflight request by request_id
     let map = get_inflight_requests_map();
     let Some(request) = map.get(&request_id) else {
-        // possible timeout. todo: pass timeout error?
         ctx.log_warning(&format!(
-            "Failed to find inflight request for id {request_id}"
+            "Failed to find inflight request for id {request_id}. Possible timeout.",
         ));
         return;
     };
@@ -379,7 +377,11 @@ extern "C" fn on_error_received(
     let target = FanoutTarget::from_node_id(sender_id).expect("Invalid target ID");
     match FanoutError::deserialize(message.buf) {
         Ok((error, _)) => handler(Err(error), target),
-        Err(_) => ctx.log_warning("Failed to deserialize error response"), // todo: pass error to handler?
+        Err(_) => {
+            ctx.log_warning("Failed to deserialize error response");
+            let err = FanoutError::serialization("");
+            handler(Err(err), target);
+        },
     }
 }
 
