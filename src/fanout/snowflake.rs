@@ -7,7 +7,6 @@ use std::sync::atomic::{AtomicU16, AtomicU64};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The `SnowflakeIdGenerator` type is a snowflake algorithm wrapper.
-#[derive(Debug)]
 pub struct SnowflakeIdGenerator {
     /// epoch used by the snowflake algorithm.
     epoch: SystemTime,
@@ -67,7 +66,6 @@ impl SnowflakeIdGenerator {
     /// let id_generator = SnowflakeIdGenerator::with_epoch(1, 1, discord_epoch);
     /// ```
     pub fn with_epoch(machine_id: u32, node_id: u32, epoch: SystemTime) -> SnowflakeIdGenerator {
-        //TODO:limit the maximum of input args machine_id and node_id
         let last_time_millis = get_time_millis(epoch);
 
         SnowflakeIdGenerator {
@@ -88,7 +86,7 @@ impl SnowflakeIdGenerator {
         idx
     }
 
-    /// The real_time_generate keep id generate time is eq call method time.
+    /// Generate an id.
     ///
     /// # Examples
     ///
