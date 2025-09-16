@@ -21,7 +21,7 @@ pub mod key;
 pub mod logging;
 mod macros;
 mod utils;
-mod fanout;
+pub mod fanout;
 
 pub use crate::context::blocked::BlockedClient;
 pub use crate::context::thread_safe::{

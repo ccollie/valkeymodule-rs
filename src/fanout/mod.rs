@@ -8,11 +8,14 @@ mod encoding;
 mod fanout_error;
 mod snowflake;
 
-#[allow(unused_imports)]
 pub use serialization::*;
 pub use utils::*;
 pub use fanout_error::*;
 pub use fanout_targets::*;
 pub use cluster_rpc::*;
 pub use fanout_operation::*;
-pub use cluster_rpc::{register_cluster_message_handlers};
+use crate::Context;
+
+pub fn init_fanout(ctx: &Context) {
+    register_cluster_message_handlers(ctx)
+}
