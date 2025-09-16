@@ -14,8 +14,8 @@ pub trait Deserialized: Sized {
     fn deserialize(buf: &[u8]) -> ValkeyResult<Self>;
 }
 
-/// A convenience trait that combines both `Serialized` and `Deserialized`.
-/// This trait is implemented for types that can be both serialized and deserialized.
+/// Trait that must be implemented for Request and Response types to be used as
+/// messages in the fanout system.
 pub trait Serializable: Serialized + Deserialized {
     
 }
