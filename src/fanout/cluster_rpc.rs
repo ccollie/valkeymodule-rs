@@ -3,7 +3,7 @@ use super::fanout_error::{FanoutError, NO_CLUSTER_NODES_AVAILABLE};
 use super::fanout_targets::FanoutTarget;
 use super::utils::generate_id;
 use super::{is_clustered, is_multi_or_lua};
-use crate::{Context, DetachedContext, Status, ValkeyModuleCtx, VALKEYMODULE_OK};
+use crate::{Context, Status, ValkeyModuleCtx, VALKEYMODULE_OK};
 use crate::{RedisModuleCtx, ValkeyError, ValkeyResult};
 use core::time::Duration;
 use std::collections::HashMap;
@@ -218,7 +218,6 @@ fn process_request<'a>(ctx: &'a Context, message: RequestMessage<'a>, sender_id:
     let Some(inflight_request) = map.get(&request_id) else {
         // The inflight request should always be found.
         // But if the timer expires, the inflight request will be removed from the map.
-        let ctx = DetachedContext::new();
         let msg = format!("BUG: Inflight request not found for request_id: {request_id}",);
         ctx.log_warning(&msg);
         return;
