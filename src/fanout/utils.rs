@@ -25,6 +25,7 @@ pub fn is_multi_or_lua(ctx: &Context) -> bool {
 }
 
 /// Returns the time duration since UNIX_EPOCH in milliseconds.
+#[cfg(test)]
 fn system_time_millis() -> i64 {
     // TODO: use a more efficient way to get current time
     let now = std::time::SystemTime::now();
