@@ -124,19 +124,17 @@ pub fn compute_query_fanout_mode(context: &Context) -> FanoutTargetMode {
 }
 
 /// Convenience method for FanoutSearchTarget with the default behavior
-pub fn get_cluster_targets(ctx: &Context, target_mode: FanoutTargetMode) -> Vec<FanoutTarget> {
-    unsafe {
-        get_cluster_targets_with_creators(
-            ctx,
-            FanoutTarget::local,
-            |node_info| FanoutTarget::remote(node_info.node_buf),
-            target_mode,
-        )
-    }
+pub fn get_fanout_targets(ctx: &Context, target_mode: FanoutTargetMode) -> Vec<FanoutTarget> {
+    get_fanout_targets_with_creators(
+        ctx,
+        FanoutTarget::local,
+        |node_info| FanoutTarget::remote(node_info.node_buf),
+        target_mode,
+    )
 }
 
 /// Generic method for getting targets with custom target creators
-pub(super) unsafe fn get_cluster_targets_with_creators<T, F1, F2>(
+pub(super) fn get_fanout_targets_with_creators<T, F1, F2>(
     ctx: &Context,
     create_local_target: F1,
     create_remote_target: F2,
@@ -244,6 +242,7 @@ where
 pub struct ClusterNodeInfo {
     node_buf: ClusterNodeIdBuf,
     ip_buf: [u8; INET6_ADDR_STR_LEN],
+    #[allow(unused_variables)]
     port: u32,
     master_buf: ClusterNodeIdBuf,
     flags: u32,
@@ -362,7 +361,6 @@ pub fn get_grouped_cluster_nodes(ctx: &Context) -> ClusterNodeMap {
             node_info.node_id().to_string()
         } else {
             node_info.master_id().to_string()
-
         };
         grouped_nodes.entry(shard_id).or_default().push(node_info);
     }
