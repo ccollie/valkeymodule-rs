@@ -307,7 +307,7 @@ where
                 Ok(buf) => match Response::deserialize(buf) {
                     Ok(resp) => callback(Ok(resp), target),
                     Err(_e) => {
-                        let err = FanoutError::serialization(Default::default());
+                        let err = FanoutError::serialization("");
                         callback(Err(err), target);
                     }
                 },

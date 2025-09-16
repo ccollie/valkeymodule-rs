@@ -69,16 +69,16 @@ impl ErrorKind {
 pub type FanoutResult<T> = Result<T, FanoutError>;
 
 impl FanoutError {
-    pub fn failed(description: String) -> Self {
+    pub fn failed<S: Into<String>>(description: S) -> Self {
         Self {
-            message: description,
+            message: description.into(),
             kind: ErrorKind::Failed,
         }
     }
 
-    pub fn serialization(description: String) -> Self {
+    pub fn serialization<S: Into<String>>(description: S) -> Self {
         Self {
-            message: description,
+            message: description.into(),
             kind: ErrorKind::Serialization,
         }
     }
