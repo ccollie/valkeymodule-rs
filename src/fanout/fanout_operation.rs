@@ -1,13 +1,12 @@
 use super::cluster_rpc::{get_cluster_command_timeout, send_cluster_request};
 use super::fanout_error::{FanoutError, FanoutResult};
-use super::fanout_targets::{get_cluster_targets, FanoutTarget, FanoutTargetMode, compute_query_fanout_mode};
+use super::fanout_targets::{get_fanout_targets, FanoutTarget, FanoutTargetMode, compute_query_fanout_mode};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use crate::fanout::Serializable;
+use crate::fanout::{ErrorKind, Serializable};
 use crate::{
     BlockedClient, Context, ThreadSafeContext, ValkeyError, ValkeyResult, ValkeyValue,
 };
-use super::utils::current_time_millis;
 
 
 /// A trait representing a fan-out operation that can be performed across cluster nodes.
@@ -89,7 +88,7 @@ where
 {
     handler: H,
     outstanding: usize,
-    deadline: i64,
+    timed_out: bool,
     thread_ctx: ThreadSafeContext<BlockedClient>,
     errors: Vec<FanoutError>,
     __phantom: std::marker::PhantomData<(Request, Response)>,
@@ -105,10 +104,10 @@ where
         let blocked_client = context.block_client();
         Self {
             handler,
-            deadline: 0,
             outstanding: 0,
             thread_ctx: ThreadSafeContext::with_blocked_client(blocked_client),
             errors: Vec::new(),
+            timed_out: false,
             __phantom: Default::default(),
         }
     }
@@ -132,11 +131,16 @@ where
     }
 
     fn on_error(&mut self, error: FanoutError, _target: FanoutTarget) {
+        if error.kind == ErrorKind::Timeout {
+            self.timed_out = true;
+            // Only record the first timeout error
+            return;
+        }
         self.errors.push(error);
     }
 
     fn generate_reply(&mut self, ctx: &Context) {
-        if self.errors.is_empty() {
+        if !self.timed_out && self.errors.is_empty() {
             self.handler.generate_reply(ctx);
         } else {
             self.generate_error_reply(ctx);
@@ -144,13 +148,15 @@ where
     }
 
     fn handle_rpc_callback(&mut self, resp: FanoutResult<Response>, target: FanoutTarget) -> bool {
-        match resp {
-            Ok(response) => {
-                // Handle successful response
-                self.handler.on_response(response, target);
-            }
-            Err(err) => {
-                self.on_error(err, target);
+        if !self.timed_out {
+            match resp {
+                Ok(response) => {
+                    // Handle successful response
+                    self.handler.on_response(response, target);
+                }
+                Err(err) => {
+                    self.on_error(err, target);
+                }
             }
         }
         self.rpc_done()
@@ -172,20 +178,20 @@ where
         self.generate_reply(&ctx);
     }
 
-    fn is_operation_timed_out(&self) -> bool {
-        current_time_millis() >= self.deadline
-    }
-
     fn generate_error_reply(&self, ctx: &Context) {
         let internal_error_log_prefix: String =
             format!("Failure(fanout) in operation {}: Internal error on node with address ", H::name());
 
         let mut error_message = String::new();
 
-        if !self.errors.is_empty() {
-            error_message = "Internal error found.".to_string();
-            for err in &self.errors {
-                ctx.log_warning(&format!("{internal_error_log_prefix}{err:?}"));
+        if self.timed_out {
+            error_message.push_str("Operation timed out.");
+        } else {
+            if !self.errors.is_empty() {
+                error_message = "Internal error found.".to_string();
+                for err in &self.errors {
+                    ctx.log_warning(&format!("{internal_error_log_prefix}{err:?}"));
+                }
             }
         }
 
@@ -231,11 +237,9 @@ where
     fn start(&mut self, ctx: &Context, handler: H) -> ValkeyResult<()> {
         let mut handler = handler;
         let timeout = handler.get_timeout();
-        let deadline = current_time_millis() + timeout.as_millis() as i64;
 
         let req = handler.generate_request();
         let mut state = FanoutState::new(ctx, handler);
-        state.deadline = deadline;
 
         let target_mode = compute_query_fanout_mode(ctx);
         if target_mode == FanoutTargetMode::Local {
@@ -244,7 +248,7 @@ where
             return Ok(());
         }
 
-        self.targets = get_cluster_targets(ctx, target_mode);
+        self.targets = get_fanout_targets(ctx, target_mode);
         let outstanding = self.targets.len();
 
         let has_local = self.targets.iter().any(|t| t.is_local());
@@ -293,7 +297,6 @@ where
                             .serialize(dest);
                     }
                     Err(_e) => {
-                        // todo: change this
                         let msg = _e.to_string();
                         return Err(ValkeyError::String(msg));
                     }
@@ -315,7 +318,7 @@ where
             },
         );
 
-        let mut buf = Vec::with_capacity(512); // 512 to select preset
+        let mut buf = Vec::with_capacity(512);
         req.serialize(&mut buf);
 
         send_cluster_request(
