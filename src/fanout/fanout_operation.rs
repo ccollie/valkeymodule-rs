@@ -89,6 +89,7 @@ where
     handler: H,
     outstanding: usize,
     timed_out: bool,
+    already_responded: bool,
     thread_ctx: ThreadSafeContext<BlockedClient>,
     errors: Vec<FanoutError>,
     __phantom: std::marker::PhantomData<(Request, Response)>,
@@ -108,6 +109,7 @@ where
             thread_ctx: ThreadSafeContext::with_blocked_client(blocked_client),
             errors: Vec::new(),
             timed_out: false,
+            already_responded: false,
             __phantom: Default::default(),
         }
     }
@@ -140,6 +142,10 @@ where
     }
 
     fn generate_reply(&mut self, ctx: &Context) {
+        if self.already_responded {
+            return;
+        }
+        self.already_responded = true;
         if !self.timed_out && self.errors.is_empty() {
             self.handler.generate_reply(ctx);
         } else {
