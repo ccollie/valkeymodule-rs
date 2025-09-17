@@ -30,6 +30,12 @@ pub trait FanoutOperation<Request, Response>: Send {
         get_cluster_command_timeout()
     }
 
+    /// Return the target mode for the fanout operation.
+    /// Override this method to change the target mode as needed.
+    fn get_target_mode(&self, ctx: &Context) -> FanoutTargetMode {
+        compute_query_fanout_mode(ctx)
+    }
+
     /// Generate the request to be sent to each target node.
     fn generate_request(&mut self) -> Request;
 
@@ -59,22 +65,16 @@ pub trait FanoutOperation<Request, Response>: Send {
 /// - `Request`: The type representing the request to be sent to the target nodes.
 /// - `Response`: The type representing the response expected from the target nodes.
 ///
-pub trait FanoutInvoker<H, Request, Response>: Send
+pub trait RpcInvoker<Request, Response>: Send
 where
-    H: FanoutOperation<Request, Response>,
     Request: Send,
     Response: Send,
 {
-    /// Start the fanout operation by generating the request and invoking RPCs to cluster nodes.
-    fn start(&mut self, ctx: &Context, handler: H) -> ValkeyResult<()>;
-
-    /// Invoke a remote RPC call to all target nodes with the provided request and callback.
-    /// The callback will be called once per target node with the status and response once the
-    /// per-node call completes.
-    fn invoke_remote_rpc(
-        &mut self,
+    fn invoke_rpc(
+        &self,
         context: &Context,
         req: Request,
+        targets: &[FanoutTarget],
         callback: Box<dyn Fn(FanoutResult<Response>, FanoutTarget) + Send + Sync>,
         timeout: Duration,
     ) -> ValkeyResult<()>;
@@ -210,81 +210,38 @@ where
     Request: Send,
     Response: Send,
 {
-    targets: Vec<FanoutTarget>,
     __phantom: std::marker::PhantomData<(H, Request, Response)>,
 }
 
-impl<H, Request, Response> BaseFanoutInvoker<H, Request, Response>
+impl <H, Request, Response> Default for BaseFanoutInvoker<H, Request, Response>
 where
     H: FanoutOperation<Request, Response>,
     Request: Send,
     Response: Send,
 {
-    pub fn new() -> Self {
+    fn default() -> Self {
         Self {
-            targets: Vec::new(),
             __phantom: Default::default(),
         }
     }
 }
 
-impl<H, Request, Response> FanoutInvoker<H, Request, Response> for BaseFanoutInvoker<H, Request, Response>
+impl<H, Request, Response> RpcInvoker<Request, Response> for BaseFanoutInvoker<H, Request, Response>
 where
     H: FanoutOperation<Request, Response> + 'static,
     Request: Serializable + Send + 'static,
     Response: Serializable + Send + 'static,
 {
-    fn start(&mut self, ctx: &Context, handler: H) -> ValkeyResult<()> {
-        let mut handler = handler;
-        let timeout = handler.get_timeout();
-
-        let req = handler.generate_request();
-        let mut state = FanoutState::new(ctx, handler);
-
-        let target_mode = compute_query_fanout_mode(ctx);
-        if target_mode == FanoutTargetMode::Local {
-            state.outstanding = 1;
-            state.handle_local_request(ctx, req);
-            return Ok(());
-        }
-
-        self.targets = get_fanout_targets(ctx, target_mode);
-        let outstanding = self.targets.len();
-
-        let has_local = self.targets.iter().any(|t| t.is_local());
-
-        state.outstanding = outstanding;
-
-        if has_local {
-            if outstanding > 1 {
-                let req_local = state.generate_request();
-                state.handle_local_request(ctx, req_local);
-            } else {
-                state.handle_local_request(ctx, req);
-                return Ok(());
-            }
-        }
-
-        let state_mutex = Mutex::new(state);
-        self.invoke_remote_rpc(
-            ctx,
-            req,
-            Box::new(move |res, target| {
-                let mut state = state_mutex.lock().expect("mutex poisoned");
-                state.handle_rpc_callback(res, target);
-            }),
-            timeout,
-        )
-    }
-
-    fn invoke_remote_rpc(
-        &mut self,
+    fn invoke_rpc(
+        &self,
         ctx: &Context,
         req: Request,
+        targets: &[FanoutTarget],
         callback: Box<dyn Fn(FanoutResult<Response>, FanoutTarget) + Send + Sync>,
         timeout: Duration,
     ) -> ValkeyResult<()> {
-        let request_handler = Arc::new(
+
+        let handle_request = Arc::new(
             |ctx: &Context,
              req_buf: &[u8],
              dest: &mut Vec<u8>,
@@ -324,52 +281,69 @@ where
         send_cluster_request(
             ctx,
             &buf,
-            &self.targets,
-            request_handler,
+            targets,
+            handle_request,
             response_handler,
             Some(timeout),
         )
     }
 }
 
-pub fn exec_fanout_request<H, Request, Response>(
+pub fn exec_fanout_request<OP, Request, Response>(
     ctx: &Context,
-    operation: H,
+    rpc_invoker: impl RpcInvoker<Request, Response>,
+    operation: OP,
 ) -> ValkeyResult<ValkeyValue>
 where
-    H: FanoutOperation<Request, Response> + 'static,
+    OP: FanoutOperation<Request, Response> + 'static,
     Request: Serializable + Send + 'static,
     Response: Serializable + Send + 'static,
 {
-    let mut invoker = BaseFanoutInvoker::new();
-    invoker.start(ctx, operation)?;
+    let mut op = operation;
+    let timeout = op.get_timeout();
+
+    let req = op.generate_request();
+    let target_mode = op.get_target_mode(ctx);
+    let mut state = FanoutState::new(ctx, op);
+
+    let mut targets = get_fanout_targets(ctx, target_mode);
+    let outstanding = targets.len();
+
+    state.outstanding = outstanding;
+
+    let local_pos = targets.iter().position(|x| x.is_local());
+    if let Some(idx) = local_pos {
+        targets.swap_remove(idx);
+        state.outstanding = state.outstanding.saturating_sub(1);
+        if state.outstanding > 1 {
+            let req_local = state.generate_request();
+            state.handle_local_request(ctx, req_local);
+        } else {
+            state.handle_local_request(ctx, req);
+            return Ok(ValkeyValue::NoReply);
+        }
+    }
+
+    let state_mutex = Mutex::new(state);
+    rpc_invoker.invoke_rpc(ctx, req, targets.as_slice(), Box::new(move |res, target| {
+            let mut state = state_mutex.lock().expect("mutex poisoned");
+            state.handle_rpc_callback(res, target);
+        }), timeout)?;
 
     // We will reply later, from the callbacks
     Ok(ValkeyValue::NoReply)
 }
 
-/// Perform a remote request
-pub fn perform_remote_request<RequestT, ResponseT, TrackerT, F, CallbackFn>(
-    request: RequestT,
-    address: &str,
-    tracker: Arc<TrackerT>,
-    rpc_invoker: F,
-    callback_logic: CallbackFn,
-    timeout_ms: Option<i32>,
-) where
-    RequestT: Send + 'static,
-    ResponseT: Send + 'static,
-    TrackerT: Send + Sync + 'static,
-    F: FnOnce(RequestT, Box<dyn FnOnce(Result<ResponseT, String>) + Send>, Option<i32>)
-        + Send
-        + 'static,
-    CallbackFn: FnOnce(Result<ResponseT, String>, Arc<TrackerT>, String) + Send + 'static,
+#[inline]
+pub fn exec_fanout_request_base<OP, Request, Response>(
+    ctx: &Context,
+    op: OP
+) -> ValkeyResult<ValkeyValue>
+where
+    OP: FanoutOperation<Request, Response> + 'static,
+    Request: Serializable + Send + 'static,
+    Response: Serializable + Send + 'static,
 {
-    let address_owned = address.to_string();
-
-    let callback = Box::new(move |result: Result<ResponseT, String>| {
-        callback_logic(result, tracker, address_owned);
-    });
-
-    rpc_invoker(request, callback, timeout_ms);
+    let invoker = BaseFanoutInvoker::<OP, Request, Response>::default();
+    exec_fanout_request(ctx, invoker, op)
 }
