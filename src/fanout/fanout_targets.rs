@@ -14,7 +14,7 @@ use std::net::Ipv6Addr;
 use std::os::raw::{c_char, c_int};
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use crate::fanout::{is_client_read_only, is_clustered};
+use crate::fanout::{is_client_read_only};
 
 pub static FORCE_REPLICAS_READONLY: AtomicBool = AtomicBool::new(false);
 
@@ -30,7 +30,6 @@ pub(super) type ClusterNodeMap = HashMap<String, Vec<ClusterNodeInfo>>;
 /// Enumeration for fanout target modes
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum FanoutTargetMode {
-    Local, // Select only the local node
     #[default]
     Random, // Default: randomly select one node per shard
     Primary, // Select all primary (master) nodes
@@ -101,25 +100,33 @@ fn copy_node_id(node_id: *const c_char) -> Option<ClusterNodeIdBuf> {
     Some(buf)
 }
 
+/// Helper function to check if the Valkey server version is considered "legacy" (e.g., < 9).
+/// In legacy versions, client read-only status might not be reliably determinable.
+fn is_valkey_version_legacy(context: &Context) -> bool {
+    context.get_server_version().map_or(false, |version| version.major < 9)
+}
+
 pub fn compute_query_fanout_mode(context: &Context) -> FanoutTargetMode {
-    if !is_clustered(context) {
-        return FanoutTargetMode::Local;
-    }
     if FORCE_REPLICAS_READONLY.load(Ordering::Relaxed) {
         // Testing only
         return FanoutTargetMode::ReplicasOnly;
     }
-    match context.get_server_version() {
-        Ok(version) if version.major < 9 => {
-            // Valkey 8 doesn't provide a way to determine if a client is READONLY,
-            // So we preserve the 1.0 behavior of random distribution
-            FanoutTargetMode::Random
-        }
-        Ok(_) => match is_client_read_only(context) {
+    // Determine fanout mode based on Valkey version and client read-only status.
+    // The following logic is based on the issue https://github.com/valkey-io/valkey-search/issues/139
+    if is_valkey_version_legacy(context) {
+        // Valkey 8 doesn't provide a way to determine if a client is READONLY,
+        // So we choose random distribution.
+        FanoutTargetMode::Random
+    } else {
+        match is_client_read_only(context) {
             Ok(true) => FanoutTargetMode::Random,
-            _ => FanoutTargetMode::Primary,
-        },
-        _ => FanoutTargetMode::Random,
+            Ok(false) => FanoutTargetMode::Primary,
+            Err(_) => {
+                // If we can't determine client read-only status, default to Random
+                log::warn!("Could not determine client read-only status, defaulting to Random fanout mode.");
+                FanoutTargetMode::Random
+            }
+        }
     }
 }
 
@@ -145,15 +152,6 @@ where
     F2: Fn(&ClusterNodeInfo) -> T,
 {
     match target_mode {
-        FanoutTargetMode::Local => {
-            // Select only the local node
-            get_targets_filtered(
-                ctx,
-                create_local_target,
-                create_remote_target,
-                |node_info| node_info.is_local(),
-            )
-        }
         FanoutTargetMode::Primary => {
             // Select all primary (master) nodes
             get_targets_filtered(
