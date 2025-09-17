@@ -22,6 +22,7 @@ pub(super) type RequestHandlerCallback =
     Arc<dyn Fn(&Context, &[u8], &mut Vec<u8>, FanoutTarget) -> ValkeyResult<()> + Send + Sync>;
 
 struct InFlightRequest {
+    id: u64,
     request_handler: RequestHandlerCallback,
     response_handler: ResponseCallback,
     outstanding: u64,
@@ -36,7 +37,7 @@ impl InFlightRequest {
             // Last response received, clean up
             self.cancel_timer(ctx);
             let mut map = get_inflight_requests_map();
-            map.remove(&self.timer_id);
+            map.remove(&self.id);
         }
     }
 
@@ -130,6 +131,7 @@ pub(super) fn send_cluster_request(
     let timer_id = ctx.create_timer(timeout, on_request_timeout, id);
 
     let request = InFlightRequest {
+        id,
         request_handler,
         response_handler,
         timer_id,
