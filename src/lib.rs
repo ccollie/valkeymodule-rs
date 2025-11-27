@@ -21,6 +21,7 @@ pub mod key;
 pub mod logging;
 mod macros;
 mod utils;
+#[cfg(feature = "fanout")]
 pub mod fanout;
 
 pub use crate::context::blocked::BlockedClient;

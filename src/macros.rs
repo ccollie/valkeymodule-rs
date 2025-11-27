@@ -470,6 +470,9 @@ macro_rules! valkey_module {
                 return raw::Status::Err as c_int;
             }
 
+            #[cfg(feature = "fanout")]
+            $crate::fanout::init_fanout(&context);
+
             $(
                 if $init_func(&context, &args) == $crate::Status::Err {
                     return $crate::Status::Err as c_int;

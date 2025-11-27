@@ -16,6 +16,5 @@ pub trait Deserialized: Sized {
 
 /// Trait that must be implemented for Request and Response types to be used as
 /// messages in the fanout system.
-pub trait Serializable: Serialized + Deserialized {
-    
-}
+pub trait Serializable: Serialized + Deserialized {}
+impl<T> Serializable for T where T: Serialized + Deserialized {}

@@ -159,6 +159,7 @@ name = "crontab"
 crate-type = ["cdylib"]
 
 [dependencies]
+arc-swap = {  version = "1.7", optional = true }
 bitflags = "2.8.0"
 libc = "0.2"
 enum-primitive-derive = "^0.1"
@@ -174,6 +175,7 @@ valkey-module-macros-internals = { path = "valkeymodule-rs-macros-internals", ve
 log = "0.4"
 paste = "1.0.15"
 rand = "0.9"
+range-set-blaze = { version = "0.4", optional = true }
 
 [dev-dependencies]
 anyhow = "1"
@@ -200,3 +202,4 @@ min-redis-compatibility-version-6-0 = []
 enable-system-alloc = []
 # this is to indicate the Module wants to use RedisModule APIs for calls
 use-redismodule-api = []
+fanout = ["dep:arc-swap", "dep:range-set-blaze"]

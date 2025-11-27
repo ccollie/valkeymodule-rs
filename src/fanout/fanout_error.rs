@@ -1,5 +1,5 @@
-use crate::{ValkeyError, ValkeyResult};
 use super::encoding::{try_read_byte_slice, write_byte_slice};
+use crate::{ValkeyError, ValkeyResult};
 
 /// Fanout error. Designed mostly for compactness since it's sent over the wire.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,20 +35,22 @@ pub enum ErrorKind {
     Serialization = 6,
 
     BadRequestId = 7,
-    
+
     Internal = 8,
+
+    Custom = 255,
 }
 
-pub(super) const PERMISSIONS_ERROR: &str = "Permission denied";
-pub(super) const KEY_PERMISSIONS_ERROR: &str = "User does not have access to one or more keys";
-pub(super) const UNKNOWN_MESSAGE_TYPE_ERROR: &str = "Unknown message type.";
-pub(super) const SERIALIZATION_ERROR: &str = "Serialization error";
-pub(super) const BAD_REQUEST_ID_ERROR: &str = "Bad request id";
-pub(super) const TIMEOUT_ERROR: &str = "Fanout command timed out";
-pub(super) const NODE_UNREACHABLE_ERROR: &str = "Cluster node unreachable";
-pub(super) const NO_CLUSTER_NODES_AVAILABLE: &str = "No cluster nodes available";
-pub(super) const INTERNAL_ERROR: &str = "Internal error";
-pub(super) const INVALID_MESSAGE_ERROR: &str = "Invalid cluster message";
+pub const PERMISSIONS_ERROR: &str = "Permission denied";
+pub const KEY_PERMISSIONS_ERROR: &str = "User does not have access to one or more keys";
+pub const UNKNOWN_MESSAGE_TYPE_ERROR: &str = "Unknown message type.";
+pub const SERIALIZATION_ERROR: &str = "Serialization error";
+pub const BAD_REQUEST_ID_ERROR: &str = "Bad request id";
+pub const TIMEOUT_ERROR: &str = "Fanout command timed out";
+pub const NODE_UNREACHABLE_ERROR: &str = "Cluster node unreachable";
+pub const NO_CLUSTER_NODES_AVAILABLE: &str = "No cluster nodes available";
+pub const INTERNAL_ERROR: &str = "Internal error";
+pub const INVALID_MESSAGE_ERROR: &str = "Invalid cluster message";
 
 impl ErrorKind {
     pub fn as_str(&self) -> &'static str {
@@ -62,17 +64,18 @@ impl ErrorKind {
             Self::Timeout => TIMEOUT_ERROR,
             Self::NodeUnreachable => NODE_UNREACHABLE_ERROR,
             Self::Internal => INTERNAL_ERROR,
+            Self::Custom => "Custom error",
         }
     }
 }
 
-pub type FanoutResult<T> = Result<T, FanoutError>;
+pub type FanoutResult<T = ()> = Result<T, FanoutError>;
 
 impl FanoutError {
     pub fn timeout() -> FanoutError {
         ErrorKind::Timeout.into()
     }
-    
+
     pub fn serialization<S: Into<String>>(description: S) -> Self {
         Self {
             message: description.into(),
@@ -90,7 +93,14 @@ impl FanoutError {
     pub fn invalid_message() -> Self {
         ErrorKind::InvalidMessage.into()
     }
-    
+
+    pub fn custom<S: Into<String>>(description: S) -> Self {
+        Self {
+            message: description.into(),
+            kind: ErrorKind::Custom,
+        }
+    }
+
     pub fn serialize(&self, buf: &mut Vec<u8>) {
         buf.push(self.kind as u8);
         write_byte_slice(buf, self.message.as_str().as_ref());
@@ -138,6 +148,7 @@ impl TryFrom<u8> for ErrorKind {
             6 => Ok(ErrorKind::Serialization),
             7 => Ok(ErrorKind::BadRequestId),
             8 => Ok(ErrorKind::Internal),
+            255 => Ok(ErrorKind::Custom),
             _ => {
                 let msg = format!("Invalid error kind: {value}");
                 Err(ValkeyError::String(msg))
@@ -188,9 +199,9 @@ impl core::error::Error for FanoutError {
 /// or falls back to a general Failed error with the original message.
 fn convert_from_string(err: &str) -> FanoutError {
     if err.is_empty() {
-        return ErrorKind::Internal.into()
+        return ErrorKind::Internal.into();
     }
-    
+
     match err {
         INVALID_MESSAGE_ERROR => ErrorKind::InvalidMessage.into(),
         KEY_PERMISSIONS_ERROR => ErrorKind::KeyPermissions.into(),
@@ -200,13 +211,9 @@ fn convert_from_string(err: &str) -> FanoutError {
         UNKNOWN_MESSAGE_TYPE_ERROR => ErrorKind::UnknownMessageType.into(),
         SERIALIZATION_ERROR => FanoutError::serialization(String::new()),
         BAD_REQUEST_ID_ERROR => ErrorKind::BadRequestId.into(),
-        TIMEOUT_ERROR =>ErrorKind::Timeout.into(),
-        _ => {
-            FanoutError {
-                kind: ErrorKind::Internal,
-                message: err.to_string(),
-            }
-        },
+        TIMEOUT_ERROR => ErrorKind::Timeout.into(),
+        NO_CLUSTER_NODES_AVAILABLE => ErrorKind::NodeUnreachable.into(),
+        _ => FanoutError::custom(err.to_string()),
     }
 }
 
@@ -243,8 +250,8 @@ mod tests {
 
     #[test]
     fn test_fanout_error_constructors() {
-        let error = FanoutError::failed("test failure".to_string());
-        assert_eq!(error.kind, ErrorKind::Failed);
+        let error = FanoutError::custom("test failure".to_string());
+        assert_eq!(error.kind, ErrorKind::Custom);
         assert_eq!(error.message, "test failure");
 
         let error = FanoutError::serialization("serialization issue".to_string());
@@ -259,33 +266,27 @@ mod tests {
     #[test]
     fn test_fanout_error_display() {
         // Error with a message
-        let error = FanoutError::failed("custom message".to_string());
+        let error = FanoutError::custom("custom message".to_string());
         assert_eq!(format!("{error}"), "custom message");
 
         // Error without a message
         let error = FanoutError {
-            kind: ErrorKind::Failed,
+            kind: ErrorKind::Internal,
             message: String::new(),
         };
-        assert_eq!(format!("{error}"), "Failed");
+        assert_eq!(format!("{error}"), "Internal error");
     }
 
     #[test]
     fn test_fanout_error_error_trait() {
-        let error = FanoutError::failed("test error".to_string());
-        assert_eq!(error.to_string(), "test error");
-
         // Test with an empty message
-        let error = FanoutError {
-            kind: ErrorKind::Timeout,
-            message: String::new(),
-        };
+        let error = FanoutError::timeout();
         assert_eq!(error.to_string(), "Fanout command timed out");
     }
 
     #[test]
     fn test_serialize_deserialize_with_message() {
-        let original = FanoutError::failed("test error message".to_string());
+        let original = FanoutError::custom("test error message".to_string());
         let mut buf = Vec::new();
         original.serialize(&mut buf);
 
@@ -320,6 +321,7 @@ mod tests {
             ErrorKind::Serialization,
             ErrorKind::BadRequestId,
             ErrorKind::Internal,
+            ErrorKind::Custom,
         ];
 
         for kind in &error_kinds {
@@ -338,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_deserialize_with_remaining_data() {
-        let original = FanoutError::failed("test".to_string());
+        let original = FanoutError::custom("test".to_string());
         let mut buf = Vec::new();
         original.serialize(&mut buf);
         buf.extend_from_slice(b"extra data");
@@ -358,13 +360,13 @@ mod tests {
         assert!(result.is_err());
 
         // Invalid error kind
-        let mut buf = vec![255]; // Invalid error kind
+        let mut buf = vec![151]; // Invalid error kind
         buf.push(0); // Empty message length
         let result = FanoutError::deserialize(&buf);
         assert!(result.is_err());
 
         // Invalid UTF-8 in a message
-        let mut buf = vec![0]; // Valid error kind (Failed)
+        let mut buf = vec![0]; // Valid error kind
         buf.push(3); // Message length = 3
         buf.extend_from_slice(&[0xFF, 0xFE, 0xFD]); // Invalid UTF-8
         let result = FanoutError::deserialize(&buf);
@@ -396,19 +398,14 @@ mod tests {
         assert_eq!(error.kind, ErrorKind::KeyPermissions);
         assert_eq!(error.message, "");
 
-        // Test generic permission error
-        let error = FanoutError::from("permission denied for user");
-        assert_eq!(error.kind, ErrorKind::Permissions);
-        assert_eq!(error.message, "");
-
         // Test unknown error
         let error = FanoutError::from("unknown error message");
-        assert_eq!(error.kind, ErrorKind::Failed);
+        assert_eq!(error.kind, ErrorKind::Custom);
         assert_eq!(error.message, "unknown error message");
 
         // Test empty string
         let error = FanoutError::from("");
-        assert_eq!(error.kind, ErrorKind::Failed);
+        assert_eq!(error.kind, ErrorKind::Internal);
         assert_eq!(error.message, "");
     }
 
@@ -416,12 +413,12 @@ mod tests {
     fn test_from_valkey_error() {
         let valkey_error = ValkeyError::Str("test error");
         let fanout_error = FanoutError::from(valkey_error);
-        assert_eq!(fanout_error.kind, ErrorKind::Failed);
+        assert_eq!(fanout_error.kind, ErrorKind::Custom);
         assert_eq!(fanout_error.message, "test error");
 
         let valkey_error = ValkeyError::String("another test".to_string());
         let fanout_error = FanoutError::from(valkey_error);
-        assert_eq!(fanout_error.kind, ErrorKind::Failed);
+        assert_eq!(fanout_error.kind, ErrorKind::Custom);
         assert_eq!(fanout_error.message, "another test");
 
         // Test with a known error constant
@@ -434,7 +431,6 @@ mod tests {
     #[test]
     fn test_convert_from_string_edge_cases() {
         // Test specific error constants
-        assert_eq!(convert_from_string(FAILED_ERROR).kind, ErrorKind::Failed);
         assert_eq!(
             convert_from_string(PERMISSIONS_ERROR).kind,
             ErrorKind::Permissions
@@ -463,15 +459,6 @@ mod tests {
     }
 
     #[test]
-    fn test_fanout_result_type_alias() {
-        let success: FanoutResult<i32> = Ok(42);
-        assert_eq!(success, Ok(42));
-
-        let failure: FanoutResult<i32> = Err(FanoutError::failed("test".to_string()));
-        assert!(failure.is_err());
-    }
-
-    #[test]
     fn test_error_kind_repr_u8() {
         // Test that the repr(u8) values match what we expect
         assert_eq!(ErrorKind::InvalidMessage as u8, 0);
@@ -483,5 +470,6 @@ mod tests {
         assert_eq!(ErrorKind::Serialization as u8, 6);
         assert_eq!(ErrorKind::BadRequestId as u8, 7);
         assert_eq!(ErrorKind::Internal as u8, 8);
+        assert_eq!(ErrorKind::Custom as u8, 255);
     }
 }
