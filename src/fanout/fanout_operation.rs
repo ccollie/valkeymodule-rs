@@ -102,7 +102,7 @@ pub trait FanoutOperation: Default + Send + 'static {
     }
 
     /// Generate the request to be sent to each target node.
-    fn generate_request(&mut self) -> Self::Request;
+    fn generate_request(&self) -> Self::Request;
 
     /// Called once per successful response from a target node.
     fn on_response(&mut self, resp: Self::Response, target: &NodeInfo);
