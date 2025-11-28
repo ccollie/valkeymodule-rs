@@ -24,9 +24,11 @@ use super::fanout::cluster_rpc::register_cluster_message_handlers;
 pub use cluster_map::{
     ClusterMap, 
     FanoutTargetMode, 
+    NodeId,
     NodeInfo, 
     NodeRole, 
     NodeLocation,
+    ShardInfo,
     SocketAddress,
     CURRENT_NODE_ID
 };
